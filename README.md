@@ -1,7 +1,81 @@
-# BeautyTalk 백엔드 — 모델 라우터
+<div align="center">
 
-사진과 질문을 받아 **읽어줄 한국어 한 문단**을 돌려주는 서버.
+# 🧠 BeautyTalk 백엔드 — 모델 라우터
+
+**사진과 질문을 받아 읽어줄 한국어 한 문단을 돌려주는 서버**
+
 사용자가 뭘 물었는지 보고 **처리 경로를 갈라 태운다.**
+
+<br>
+
+![FastAPI](https://img.shields.io/badge/FastAPI-WS%20%2B%20HTTP-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![Qwen3-VL](https://img.shields.io/badge/Qwen3--VL-8B%204bit-6236FF?style=for-the-badge)
+![CUDA](https://img.shields.io/badge/CUDA-12.8%20·%20VRAM%2010GB%2B-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
+
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
+![PEFT](https://img.shields.io/badge/PEFT-LoRA%20핫스왑-yellow?style=flat-square)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-얼굴%2F입술%20크롭-0097A7?style=flat-square)
+![Docker](https://img.shields.io/badge/Docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white)
+![GPU](https://img.shields.io/badge/GPU-1장%20·%20직렬%20처리-orange?style=flat-square)
+
+</div>
+
+---
+
+## ⚡ 한눈에 보기
+
+| | |
+|---|---|
+| **입력** | 사진 + 질문 (WebSocket `analyze`) |
+| **출력** | TTS로 읽을 **한국어 한 문단** (`analysis_result`) |
+| **경로 분기** | 질문에 립 단서가 있으면 `lip`, 아니면 `makeup` (기본값) |
+| **모델** | Qwen3-VL 8B 4bit **한 벌** + LoRA 어댑터 전환 |
+| **전처리** | MediaPipe 크롭 — **GPU 락 밖에서**, 중앙값 13 ms |
+| **동시 처리** | GPU 1장 기준, 요청은 **직렬** |
+
+앱은 어느 경로로 갔는지 몰라도 된다 — 프로토콜은 한쪽뿐이다(WS `analyze` → `analysis_result`).
+
+앱 저장소: [sktflyai9th5/beautytalk-app](https://github.com/sktflyai9th5/beautytalk-app)
+
+---
+
+## 🧭 목차
+
+- [핵심 설계](#-핵심-설계)
+- [요구사항](#-요구사항)
+- [띄우기](#-띄우기)
+- [확인하기](#-확인하기)
+- [API](#-api)
+- [설정](#%EF%B8%8F-설정)
+- [경로 바꾸기](#-경로-바꾸기)
+- [미러링 — 배포 전 결정할 것](#-미러링--배포-전-결정할-것)
+- [구조](#-구조)
+- [알려진 제약](#%EF%B8%8F-알려진-제약)
+
+---
+
+## 🔀 핵심 설계
+
+```mermaid
+flowchart TB
+    IN["📷 사진 + 💬 질문"] --> R{"router.pick<br/>질문에 립 단서가 있나"}
+
+    R -->|"'립 어때?'"| LC["입술 크롭"]
+    R -->|"'눈썹 어때?' · 기본값"| FC["얼굴 크롭"]
+
+    LC --> LM["베이스 Qwen3-VL 8B<br/>+ 립 프롬프트 + few-shot 3장"]
+    FC --> MM["베이스 Qwen3-VL 8B<br/>+ 메이크업 LoRA 어댑터"]
+
+    LM --> S["새니타이즈"]
+    MM --> S
+    S --> OUT["🔊 TTS로 읽을 한국어 한 문단"]
+
+    style R fill:#fff3cd,stroke:#d39e00,stroke-width:2px
+    style OUT fill:#d4edda,stroke:#28a745
+```
+
+<details>
+<summary>텍스트 버전 (Mermaid가 안 보일 때)</summary>
 
 ```
 사진 + 질문
@@ -13,30 +87,7 @@
                                      TTS 로 읽을 한국어 한 문단
 ```
 
-앱은 어느 경로로 갔는지 몰라도 된다 — 프로토콜은 한쪽뿐이다(WS `analyze` → `analysis_result`).
-
-앱 저장소: [sktflyai9th5/beautytalk-app](https://github.com/sktflyai9th5/beautytalk-app)
-
-`FastAPI` · `Qwen3-VL 8B (4bit)` · `PEFT/LoRA` · `MediaPipe` · `Docker/CUDA`
-
----
-
-## 목차
-
-- [핵심 설계](#핵심-설계)
-- [요구사항](#요구사항)
-- [띄우기](#띄우기)
-- [확인하기](#확인하기)
-- [API](#api)
-- [설정](#설정)
-- [경로 바꾸기](#경로-바꾸기)
-- [미러링 — 배포 전 결정할 것](#미러링--배포-전-결정할-것)
-- [구조](#구조)
-- [알려진 제약](#알려진-제약)
-
----
-
-## 핵심 설계
+</details>
 
 ### 베이스는 한 벌만 올린다
 
@@ -55,6 +106,7 @@
 립 경로에 어댑터가 없는 것은 의도다 — 원 인계 자료가 "파인튜닝 없음, 시스템 프롬프트 +
 few-shot 3장으로만 동작"이라고 명시한다.
 
+> [!CAUTION]
 > **모델을 4B 로 내리지 말 것.** 추론이 대략 절반으로 줄지만, 립 프롬프트와 few-shot 3장이
 > 8B 기준으로 작성·검증된 세트다. 바꾸면 그 검증이 무효가 되고 사용자는 답이 나빠진 걸
 > 스스로 확인할 수 없다. 메이크업 어댑터도 8B 위에서 학습돼 애초에 바꿀 수 없다.
@@ -82,7 +134,7 @@ few-shot 3장으로만 동작"이라고 명시한다.
 
 ---
 
-## 요구사항
+## 📋 요구사항
 
 | 항목 | 값 |
 | --- | --- |
@@ -95,7 +147,7 @@ few-shot 3장으로만 동작"이라고 명시한다.
 
 ---
 
-## 띄우기
+## 🚀 띄우기
 
 ```bash
 docker compose up -d --build
@@ -108,7 +160,10 @@ docker compose logs -f
 적재가 끝나기 전에는 `/health` 가 `loading` 이고 컨테이너는 unhealthy다. 정상이다
 (`start-period` 15분).
 
-### GPU 없이 (라우팅·전처리만)
+<details>
+<summary><b>GPU 없이 — 라우팅·전처리만</b></summary>
+
+<br>
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.mock.yml up -d --build
@@ -116,7 +171,12 @@ docker compose -f docker-compose.yml -f docker-compose.mock.yml up -d --build
 
 모델을 올리지 않고 뜬다. 라우팅 규칙과 크롭을 확인할 때 쓴다.
 
-### Docker 없이
+</details>
+
+<details>
+<summary><b>Docker 없이</b></summary>
+
+<br>
 
 ```bash
 pip install torch==2.11.0+cu128 torchvision==0.26.0+cu128 --index-url https://download.pytorch.org/whl/cu128
@@ -127,9 +187,11 @@ python -m beautytalk.main
 `torchvision` 은 선택이 아니다 — 프로세서가 비디오 프로세서를 함께 들고 있어서 없으면
 로드 자체가 `ImportError` 로 죽는다.
 
+</details>
+
 ---
 
-## 확인하기
+## ✅ 확인하기
 
 ```bash
 python selfcheck.py --image selfie.jpg
@@ -156,7 +218,7 @@ python -m pytest tests/ -q
 
 ---
 
-## API
+## 🔌 API
 
 | 메서드 | 경로 | 용도 |
 | --- | --- | --- |
@@ -187,18 +249,19 @@ python -m pytest tests/ -q
 앱은 `message` 만 읽는다. 나머지는 로그를 맞춰 볼 때 쓴다. `status` 가 `retake` 여도
 `message` 는 그대로 읽어 주면 된다 — 재촬영 안내 문장이다.
 
-**대기 시간은 앱이 서버보다 길어야 한다**(앱 70초 > 서버 60초). 앱이 먼저 포기하면 다 만든
-답을 버리고, 그 요청이 GPU 한 자리를 계속 잡는다.
+> [!WARNING]
+> **대기 시간은 앱이 서버보다 길어야 한다**(앱 70초 > 서버 60초). 앱이 먼저 포기하면 다 만든
+> 답을 버리고, 그 요청이 GPU 한 자리를 계속 잡는다.
 
 ---
 
-## 설정
+## ⚙️ 설정
 
 전부 환경변수이고 기본값이 있다. 자주 건드리는 것만:
 
 | 변수 | 기본 | 뜻 |
 | --- | --- | --- |
-| `BT_MIRRORED_DEFAULT` | `false` | 전면 카메라 미러 되돌리기 (아래 참고) |
+| `BT_MIRRORED_DEFAULT` | `false` | 전면 카메라 미러 되돌리기 ([아래](#-미러링--배포-전-결정할-것)) |
 | `BT_BASE_MODEL` | unsloth 4bit Qwen3-VL 8B | 베이스 체크포인트 |
 | `BT_MAKEUP_ADAPTER` | 메이크업 LoRA | 어댑터 저장소 |
 | `BT_LIP_ADAPTER` | (없음) | 립 경로에도 어댑터를 붙이고 싶을 때 |
@@ -217,9 +280,12 @@ python -m pytest tests/ -q
 
 ---
 
-## 경로 바꾸기
+## 🔧 경로 바꾸기
 
-### 프롬프트만 고칠 때
+<details open>
+<summary><b>프롬프트만 고칠 때</b></summary>
+
+<br>
 
 `beautytalk/assets/<경로>/system_prompt.txt` 를 고치고 재시작한다.
 compose 가 assets 를 볼륨으로 붙여 놔서 **이미지 재빌드가 필요 없다.**
@@ -228,36 +294,50 @@ compose 가 assets 를 볼륨으로 붙여 놔서 **이미지 재빌드가 필�
 docker compose restart
 ```
 
-### 트리거 단어를 바꿀 때
+</details>
+
+<details>
+<summary><b>트리거 단어를 바꿀 때</b></summary>
+
+<br>
 
 `beautytalk/router.py` 의 `LIP_KEYWORDS` / `LIP_NEGATIONS`. 바꿨으면 `pytest tests/` 를 돌린다 —
 여기서 잘못 고르면 크롭도 프롬프트도 어댑터도 전부 어긋나는데, 사용자는 화면을 못 보므로
 **조용히** 틀린다. 키워드에 오타 변형(입슬·입쑬·맆)이 들어 있는 것은 음성 인식 오인식 대응이다.
 
-### 경로를 추가할 때
+</details>
+
+<details>
+<summary><b>경로를 추가할 때</b></summary>
+
+<br>
 
 1. `beautytalk/assets/<이름>/system_prompt.txt` 작성
 2. (선택) `assets/<이름>/fewshot/fewshot.json` — 있으면 자동으로 실린다
 3. `beautytalk/routes.py` 의 `load()` 에 `Route(...)` 한 줄
 4. `beautytalk/router.py` 에 트리거 단어
 
+</details>
+
 ### few-shot 예시
 
-립 경로의 3장은 **세트다.** 교체·추가·순서 변경 시 성능이 크게 흔들린다 —
-예시 1장 교체로 정상 판별이 10/14 → 7/14 로 무너진 사례가 있다.
+> [!CAUTION]
+> 립 경로의 3장은 **세트다.** 교체·추가·순서 변경 시 성능이 크게 흔들린다 —
+> 예시 1장 교체로 정상 판별이 **10/14 → 7/14** 로 무너진 사례가 있다.
 
 이미지 3장과 목록(`fewshot.json`)은 `beautytalk/assets/lip/fewshot/` 에 함께 들어 있다.
 **실제 인물의 입술 사진이므로 저장소를 공개로 돌리기 전에 다시 판단할 것.**
 
 ---
 
-## 미러링 — 배포 전 결정할 것
+## 🪞 미러링 — 배포 전 결정할 것
 
 전면 카메라 프리뷰의 좌우 반전은 보통 **픽셀에 구워져** 저장되고 EXIF 에는 기록되지 않는다.
 그래서 코드로는 알 수 없다.
 
-틀리면 **좌우 안내가 통째로 뒤집힌다.** "오른쪽 입꼬리"라고 했는데 실제로는 왼쪽이다.
-그리고 이건 사용자가 스스로 확인할 수 없는 종류의 오류다.
+> [!WARNING]
+> 틀리면 **좌우 안내가 통째로 뒤집힌다.** "오른쪽 입꼬리"라고 했는데 실제로는 왼쪽이다.
+> 그리고 이건 사용자가 스스로 확인할 수 없는 종류의 오류다.
 
 1. 한쪽 입꼬리에만 립을 번지게 하고 앱으로 찍는다
 2. 답변의 좌우가 **본인 몸 기준**으로 맞는지 본다
@@ -267,7 +347,7 @@ docker compose restart
 
 ---
 
-## 구조
+## 📁 구조
 
 ```
 server/
@@ -283,7 +363,7 @@ server/
 │       ├── face_landmarker.task
 │       ├── lip/       system_prompt.txt · fewshot/
 │       └── makeup/    system_prompt.txt
-├── tests/             라우팅·새니타이즈 (GPU 불필요)
+├── tests/             라우팅·새니타이즈·부위 매핑 (GPU 불필요)
 ├── selfcheck.py       배포 후 자가진단
 ├── Dockerfile · docker-compose.yml · docker-compose.mock.yml
 └── requirements.txt   검증된 버전 고정
@@ -291,7 +371,7 @@ server/
 
 ---
 
-## 알려진 제약
+## ⚠️ 알려진 제약
 
 - **메이크업 경로의 시스템 프롬프트가 임시본이다.** 어댑터 저장소에 학습에 쓴 프롬프트가
   들어 있지 않아, 립 프롬프트의 원칙을 얼굴 전체로 넓혀 새로 썼다. 원문을 받으면
@@ -303,3 +383,7 @@ server/
 - **얼굴 사진 보존 정책이 아직 없다.** 지금은 아무것도 저장하지 않는다. 재측정하려면
   크롭을 남겨야 하고, 남기려면 동의가 필요하다.
 - **동시 요청은 직렬 처리된다.** GPU 1장 기준 설계라 여러 명이 동시에 쓰면 순서대로 기다린다.
+
+<div align="center">
+<sub>BeautyTalk 백엔드</sub>
+</div>
